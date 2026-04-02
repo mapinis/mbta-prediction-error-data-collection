@@ -3,11 +3,11 @@ prediction_stream.py
 
 Listen to and handle the prediction stream
 
-open_prediction_stream is meant to be run in its own thread
+open is meant to be run in its own thread
 """
 
 from concurrent.futures import ThreadPoolExecutor
-from datetime import datetime
+from datetime import datetime, timezone
 import json
 import logging
 from pathlib import Path
@@ -49,14 +49,15 @@ def update_trips(db_path: Path, trip_id: str):
 
             trip_data = trip_response.raise_for_status().json()
 
+            # insert or ignore to prevent race condition of two concurrent update_trip threads with same trip_id
             conn.execute(
-                "INSERT INTO trips VALUES(?, ?, ?, ?, ?)",
+                "INSERT OR IGNORE INTO trips VALUES(?, ?, ?, ?, ?)",
                 (
                     trip_id,
-                    trip_data["relationships"]["route"]["data"]["id"],
-                    trip_data["attributes"]["headsign"],
-                    trip_data["attributes"]["direction_id"],
-                    datetime.now().isoformat(),
+                    trip_data["data"]["relationships"]["route"]["data"]["id"],
+                    trip_data["data"]["attributes"]["headsign"],
+                    trip_data["data"]["attributes"]["direction_id"],
+                    datetime.now(timezone.utc).isoformat(),
                 ),
             )
 
@@ -80,7 +81,9 @@ class PredictionStream:
         """
 
         # get all the values needed from the update dictionary
-        recorded_at = datetime.now().isoformat()
+        prediction_time = datetime.now(timezone.utc)
+
+        recorded_at = prediction_time.isoformat()
         prediction_id = prediction_update["id"]
 
         trip_id = prediction_update["relationships"]["trip"]["data"]["id"]
@@ -88,9 +91,17 @@ class PredictionStream:
         direction_id = prediction_update["attributes"]["direction_id"]
         route_id = prediction_update["relationships"]["route"]["data"]["id"]
 
-        vehicle_id = prediction_update["relationships"]["vehicle"]["data"]["id"]
+        # if the prediction is for the start of a route, arrival_time may be null
+        # in this case, fall back to departure_time (which will only be null at last stop)
+        predicted_time = (
+            datetime.fromisoformat(
+                prediction_update["attributes"]["arrival_time"]
+                or prediction_update["attributes"]["departure_time"]
+            )
+            .astimezone(timezone.utc)
+            .isoformat()
+        )
 
-        predicted_arrival_time = prediction_update["attributes"]["arrival_time"]
         schedule_relationship = (
             prediction_update["attributes"]["schedule_relationship"] or "SCHEDULED"
         )
@@ -104,14 +115,18 @@ class PredictionStream:
 
         # get active alerts for this prediction
         alert_tuples = check_alerts(
-            AlertEntity(*(route_id, direction_id, stop_id, trip_id))
+            AlertEntity(*(route_id, direction_id, stop_id, trip_id)), prediction_time
         )
 
-        active_alert_ids = json.dumps(sorted([a[0] for a in alert_tuples]))
-        max_severity = max(alert_tuples, key=lambda a: a[1])[1]
+        active_alert_ids = json.dumps(sorted([a[0] for a in alert_tuples])) or None
+        max_severity = max(alert_tuples, key=lambda a: a[1], default=["", None])[1]
 
         conn.execute(
-            "INSERT INTO prediction_snapshots VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            """INSERT INTO prediction_snapshots
+            (prediction_id, trip_id, route_id, direction_id, stop_id,
+            stop_sequence, predicted_time, schedule_relationship,
+            recorded_at, active_alert_ids, max_alert_severity)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
             (
                 prediction_id,
                 trip_id,
@@ -119,8 +134,7 @@ class PredictionStream:
                 direction_id,
                 stop_id,
                 stop_sequence,
-                vehicle_id,
-                predicted_arrival_time,
+                predicted_time,
                 schedule_relationship,
                 recorded_at,
                 active_alert_ids,
@@ -133,16 +147,16 @@ class PredictionStream:
         Handle arrival of train to stop via prediction removal
         """
 
-        resolved_at = datetime.now().isoformat()
+        resolved_at = datetime.now(timezone.utc).isoformat()
         prediction_id = prediction_removal["id"]
 
         res = conn.execute(
-            """
-SELECT trip_id, route_id, direction_id, stop_id, schedule_relationship
-FROM prediction_snapshots
-WHERE prediction_id = ?
-ORDER BY recorded_at DESC""",
-            (prediction_id),
+            """SELECT trip_id, route_id, direction_id, stop_id, schedule_relationship
+            FROM prediction_snapshots
+            WHERE prediction_id = ?
+            ORDER BY recorded_at DESC
+            LIMIT 1""",
+            (prediction_id,),
         )
 
         data = res.fetchone()
@@ -224,3 +238,6 @@ ORDER BY recorded_at DESC""",
                                     sse.event,
                                     sse.data,
                                 )
+
+                        # commit after handling event
+                        conn.commit()

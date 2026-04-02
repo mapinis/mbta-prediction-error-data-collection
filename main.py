@@ -4,11 +4,14 @@ MBTA Error Data Collection
 
 import sqlite3
 from pathlib import Path
-import os
 import logging
+import threading
 
 from dotenv import load_dotenv
 import click
+
+from alert_stream import AlertStream
+from prediction_stream import PredictionStream
 
 load_dotenv()
 
@@ -18,7 +21,6 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 DB_INIT_SCRIPT_PATH = Path("./init_db.sql")
-MBTA_API_KEY = os.environ["MBTA_API_KEY"]
 
 
 def setup_db(db_path: Path):
@@ -39,3 +41,37 @@ def setup_db(db_path: Path):
         conn.executescript(init_script)
 
     logger.info("DB successfully setup")
+
+
+@click.command()
+@click.argument(
+    "db_path",
+    help="Path to new or current SQLite DB. Will be created and setup if needed.",
+    type=click.Path(path_type=Path, allow_dash=False),
+)
+def main(db_path: Path):
+    """
+    Run the data collection
+    """
+
+    logger.info("Starting up MBTA error data collection")
+    logger.info("DB init script path: %s", DB_INIT_SCRIPT_PATH)
+    logger.info("DB path: %s", db_path)
+
+    setup_db(db_path)
+
+    alert_stream = AlertStream()
+    prediction_stream = PredictionStream(db_path)
+
+    logger.info("Starting stream reader threads")
+
+    alert_thread = threading.Thread(target=alert_stream.open, name="AlertThread")
+    prediction_thread = threading.Thread(
+        target=prediction_stream.open, name="PredictionThread"
+    )
+
+    alert_thread.start()
+    prediction_thread.start()
+
+    alert_thread.join()
+    prediction_thread.join()

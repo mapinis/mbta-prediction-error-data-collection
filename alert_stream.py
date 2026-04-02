@@ -3,11 +3,12 @@ alert_stream.py
 
 Listen to and handle the alert stream
 
-open_alert_stream is meant to be run in its own thread
+open is meant to be run in its own thread
 """
 
 import logging
 import os
+from datetime import datetime, timezone
 
 import httpx
 from httpx_sse import connect_sse
@@ -19,7 +20,7 @@ MBTA_API_KEY = os.environ["MBTA_API_KEY"]
 logger = logging.getLogger(__name__)
 
 
-class AlertsStream:
+class AlertStream:
     """
     Class to handle alerts streams
     """
@@ -31,7 +32,7 @@ class AlertsStream:
 
         # there may be many possible informed_entities per alert
         alert_id = alert_resource_event["id"]
-        severity = alert_resource_event["severity"]
+        severity = alert_resource_event["attributes"]["severity"]
 
         alert_entities = [
             AlertEntity(
@@ -40,14 +41,26 @@ class AlertsStream:
                 stop=ie.get("stop", None),
                 trip=ie.get("trip", None),
             )
-            for ie in alert_resource_event["informed_entity"]
+            for ie in alert_resource_event["attributes"]["informed_entity"]
         ]
 
-        add_alert(
-            alert_id,
-            severity,
-            alert_entities,
-        )
+        periods = [
+            (
+                (
+                    datetime.fromisoformat(p["start"])
+                    if p["start"]
+                    else datetime.min.replace(tzinfo=timezone.utc)
+                ),
+                (
+                    datetime.fromisoformat(p["end"])
+                    if p["end"]
+                    else datetime.max.replace(tzinfo=timezone.utc)
+                ),
+            )
+            for p in alert_resource_event["attributes"]["active_period"]
+        ]
+
+        add_alert(alert_id, severity, alert_entities, periods)
 
     def _handle_update_alert(self, alert_resource_event: dict):
         """
@@ -94,12 +107,15 @@ class AlertsStream:
                         case "reset":
                             # data should be list of resources
                             alert_updates = sse.json()
-                            for alert_update in alert_updates:
-                                self._handle_add_alert(alert_update)
-                        case "add" | "update":
+                            for alert_add in alert_updates:
+                                self._handle_add_alert(alert_add)
+                        case "add":
                             # data is singular resource
+                            alert_add = sse.json()
+                            self._handle_add_alert(alert_add)
+                        case "update":
                             alert_update = sse.json()
-                            self._handle_add_alert(alert_update)
+                            self._handle_update_alert(alert_update)
                         case "remove":
                             # data is id
                             self._handle_remove_update(sse.json())

@@ -5,7 +5,8 @@ Holds the current alerts and the map of
 """
 
 import threading
-from typing import Dict, Tuple, Set, NamedTuple
+from datetime import datetime
+from typing import Dict, Set, NamedTuple
 from itertools import product
 
 
@@ -23,26 +24,31 @@ class AlertEntity(NamedTuple):
     trip: str | None
 
 
-# map of entities (route, direction, stop, trip) to set of (alert_id, severity) tuples
-_entity_to_alerts_map: Dict[AlertEntity, Set[Tuple[str, int]]] = {}
-_entity_to_alerts_map_lock = threading.Lock()
+_alerts_lock = threading.Lock()
+
+# map of entities (route, direction, stop, trip) to set of alert_ids
+_entity_to_alerts_map: Dict[AlertEntity, Set[str]] = {}
 
 # removal events do not have the attributes, so this keeps track of those
-# int is severity
-_alerts_to_entities_map: Dict[str, Tuple[list[AlertEntity], int]] = {}
-# does not need a lock, only used by alerts_stream
-# thread when adding or removing alerts
+_alerts_to_entities_map: Dict[
+    str, tuple[list[AlertEntity], int, list[tuple[datetime, datetime]]]
+] = {}
 
 
-def add_alert(alert_id: str, severity: int, entities: list[AlertEntity]):
+def add_alert(
+    alert_id: str,
+    severity: int,
+    entities: list[AlertEntity],
+    active_periods: list[tuple[datetime, datetime]],
+):
     """
     Thread-safe alert add
     """
 
-    with _entity_to_alerts_map_lock:
-        _alerts_to_entities_map[alert_id] = (entities, severity)
+    with _alerts_lock:
+        _alerts_to_entities_map[alert_id] = (entities, severity, active_periods)
         for entity in entities:
-            _entity_to_alerts_map.setdefault(entity, set()).add((alert_id, severity))
+            _entity_to_alerts_map.setdefault(entity, set()).add(alert_id)
 
 
 def remove_alert(alert_id: str):
@@ -50,26 +56,33 @@ def remove_alert(alert_id: str):
     Thread-safe alert remove
     """
 
-    with _entity_to_alerts_map_lock:
+    with _alerts_lock:
         if alert_id in _alerts_to_entities_map:
-            entities, sev = _alerts_to_entities_map.pop(alert_id)
+            entities, *_ = _alerts_to_entities_map.pop(alert_id)
             for entity in entities:
-                _entity_to_alerts_map[entity].discard((alert_id, sev))
+                _entity_to_alerts_map[entity].discard(alert_id)
                 if not _entity_to_alerts_map[entity]:
                     _entity_to_alerts_map.pop(entity)
 
 
-def check_alerts(entities: AlertEntity) -> Set[Tuple[str, int]]:
+def check_alerts(entities: AlertEntity, time: datetime) -> Set[tuple[str, int]]:
     """
     Thread-safe alert check
-    Returns union set of all (alert, severity) pairs
-    That these entities may apply to
+    Returns union set of all (alert_id, severity) pairs that apply to these
+    entities and are currently within an active period
     """
 
-    alert_tuples = set()
-    with _entity_to_alerts_map_lock:
+    alert_ids: set[str] = set()
+    with _alerts_lock:
         for mask in product([True, False], repeat=4):
             key = AlertEntity(*(v if use else None for use, v in zip(mask, entities)))
-            alert_tuples |= _entity_to_alerts_map.get(key, set())
+            alert_ids |= _entity_to_alerts_map.get(key, set())
 
-    return alert_tuples
+        return {
+            (alert_id, _alerts_to_entities_map[alert_id][1])
+            for alert_id in alert_ids
+            if any(
+                start <= time <= end
+                for start, end in _alerts_to_entities_map[alert_id][2]
+            )
+        }
