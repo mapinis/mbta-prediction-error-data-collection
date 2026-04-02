@@ -5,6 +5,8 @@ MBTA Error Data Collection
 import sqlite3
 from pathlib import Path
 import logging
+import os
+import signal
 import threading
 
 from dotenv import load_dotenv
@@ -75,9 +77,13 @@ def main(db_path: Path):
     alert_thread.start()
     prediction_thread.start()
 
-    alert_thread.join()
-    prediction_thread.join()
+    while alert_thread.is_alive() and prediction_thread.is_alive():
+        alert_thread.join(timeout=1)
+
+    dead = "AlertThread" if not alert_thread.is_alive() else "PredictionThread"
+    logger.critical("%s died — shutting down", dead)
+    os.kill(os.getpid(), signal.SIGTERM)
 
 
 if __name__ == "__main__":
-    main()
+    main()  # pylint: disable=no-value-for-parameter

@@ -6,7 +6,7 @@ Listen to and handle the prediction stream
 open is meant to be run in its own thread
 """
 
-from concurrent.futures import ThreadPoolExecutor
+from concurrent.futures import ThreadPoolExecutor  # pylint: disable=no-name-in-module
 from datetime import datetime, timezone
 import json
 import logging
