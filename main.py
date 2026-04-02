@@ -18,6 +18,7 @@ load_dotenv()
 logging.basicConfig(
     level=logging.INFO, format="%(filename)s:%(funcName)s — %(levelname)s — %(message)s"
 )
+logging.getLogger("httpx").setLevel(logging.ERROR)
 logger = logging.getLogger(__name__)
 
 DB_INIT_SCRIPT_PATH = Path("./init_db.sql")
@@ -46,12 +47,13 @@ def setup_db(db_path: Path):
 @click.command()
 @click.argument(
     "db_path",
-    help="Path to new or current SQLite DB. Will be created and setup if needed.",
     type=click.Path(path_type=Path, allow_dash=False),
 )
 def main(db_path: Path):
     """
     Run the data collection
+
+    DB_PATH is path to new or current SQLite DB. Will be created and setup if needed.
     """
 
     logger.info("Starting up MBTA error data collection")
@@ -75,3 +77,7 @@ def main(db_path: Path):
 
     alert_thread.join()
     prediction_thread.join()
+
+
+if __name__ == "__main__":
+    main()

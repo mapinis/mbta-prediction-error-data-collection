@@ -3,3 +3,4 @@
 **/.vscode
 **/.claude
 data/
+**/__pycache__

@@ -15,8 +15,6 @@ from httpx_sse import connect_sse
 
 from alerts import AlertEntity, add_alert, remove_alert
 
-MBTA_API_KEY = os.environ["MBTA_API_KEY"]
-
 logger = logging.getLogger(__name__)
 
 
@@ -90,13 +88,16 @@ class AlertStream:
         """
 
         # create httpx client
-        with httpx.Client() as client:
+        with httpx.Client(timeout=httpx.Timeout(5.0, read=None)) as client:
             # connect
             with connect_sse(
                 client,
                 "GET",
                 "https://api-v3.mbta.com/alerts/?filter[route]=Orange,Red,Blue,Green-B,Green-C,Green-D,Green-E",
-                headers={"Accept": "text/event-stream", "x-api-key": MBTA_API_KEY},
+                headers={
+                    "Accept": "text/event-stream",
+                    "x-api-key": os.environ["MBTA_API_KEY"],
+                },
             ) as event_source:
 
                 event_source.response.raise_for_status()

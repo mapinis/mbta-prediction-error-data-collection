@@ -19,8 +19,6 @@ from httpx_sse import connect_sse
 
 from alerts import AlertEntity, check_alerts
 
-MBTA_API_KEY = os.environ["MBTA_API_KEY"]
-
 logger = logging.getLogger(__name__)
 update_trips_executor = ThreadPoolExecutor(
     max_workers=4, thread_name_prefix="update_trips_"
@@ -43,8 +41,8 @@ def update_trips(db_path: Path, trip_id: str):
 
             trip_response = httpx.get(
                 f"https://api-v3.mbta.com/trips/{trip_id}",
-                headers={"x-api-key": MBTA_API_KEY},
-                timeout=2,  # 2 seconds
+                headers={"x-api-key": os.environ["MBTA_API_KEY"]},
+                timeout=5,  # 5 seconds
             )
 
             trip_data = trip_response.raise_for_status().json()
@@ -91,15 +89,24 @@ class PredictionStream:
         direction_id = prediction_update["attributes"]["direction_id"]
         route_id = prediction_update["relationships"]["route"]["data"]["id"]
 
+        logger.info("New prediction for trip %s", trip_id)
+
         # if the prediction is for the start of a route, arrival_time may be null
         # in this case, fall back to departure_time (which will only be null at last stop)
-        predicted_time = (
-            datetime.fromisoformat(
-                prediction_update["attributes"]["arrival_time"]
-                or prediction_update["attributes"]["departure_time"]
+        raw_time = (
+            prediction_update["attributes"]["arrival_time"]
+            or prediction_update["attributes"]["departure_time"]
+        )
+
+        if raw_time is None:
+            logger.warning(
+                "No arrival or departure time for prediction %s, skipping",
+                prediction_id,
             )
-            .astimezone(timezone.utc)
-            .isoformat()
+            return
+
+        predicted_time = (
+            datetime.fromisoformat(raw_time).astimezone(timezone.utc).isoformat()
         )
 
         schedule_relationship = (
@@ -107,8 +114,6 @@ class PredictionStream:
         )
 
         stop_sequence = prediction_update["attributes"]["stop_sequence"]
-
-        logger.info("New prediction for trip %s", trip_id)
 
         # update trips as needed
         update_trips_executor.submit(update_trips, self._db_path, trip_id)
@@ -206,13 +211,16 @@ class PredictionStream:
         # create DB connection
         with sqlite3.connect(self._db_path) as conn:
             # create httpx client
-            with httpx.Client() as client:
+            with httpx.Client(timeout=httpx.Timeout(5.0, read=None)) as client:
                 # connect
                 with connect_sse(
                     client,
                     "GET",
                     "https://api-v3.mbta.com/predictions/?filter[route]=Orange,Red,Blue,Green-B,Green-C,Green-D,Green-E",
-                    headers={"Accept": "text/event-stream", "x-api-key": MBTA_API_KEY},
+                    headers={
+                        "Accept": "text/event-stream",
+                        "x-api-key": os.environ["MBTA_API_KEY"],
+                    },
                 ) as event_source:
 
                     event_source.response.raise_for_status()
