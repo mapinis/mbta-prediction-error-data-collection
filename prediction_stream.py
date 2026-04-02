@@ -167,7 +167,7 @@ class PredictionStream:
         data = res.fetchone()
 
         if not data:
-            logger.error(
+            logger.warning(
                 "Prediction %s removed without any prediction snapshots recorded",
                 prediction_id,
             )
@@ -186,8 +186,12 @@ class PredictionStream:
             case _:
                 resolution_type = "other"
 
+        logger.info(
+            "Logging arrival for trip %s, prediction %s", data[0], prediction_id
+        )
+
         conn.execute(
-            "INSERT INTO arrivals VALUES(?, ?, ?, ?, ?, ?, ?)",
+            "INSERT OR IGNORE INTO arrivals VALUES (?, ?, ?, ?, ?, ?, ?)",
             (
                 prediction_id,
                 data[0],
@@ -198,8 +202,6 @@ class PredictionStream:
                 resolution_type,
             ),
         )
-
-        logger.info("Arrival logged for trip %s, prediction %s", data[0], prediction_id)
 
     def open(self):
         """
