@@ -12,8 +12,10 @@ import click
 
 load_dotenv()
 
-logging.basicConfig()
-logger = logging.getLogger()
+logging.basicConfig(
+    level=logging.INFO, format="%(filename)s:%(funcName)s — %(levelname)s — %(message)s"
+)
+logger = logging.getLogger(__name__)
 
 DB_INIT_SCRIPT_PATH = Path("./init_db.sql")
 MBTA_API_KEY = os.environ["MBTA_API_KEY"]
