@@ -123,7 +123,7 @@ class PredictionStream:
             AlertEntity(*(route_id, direction_id, stop_id, trip_id)), prediction_time
         )
 
-        active_alert_ids = json.dumps(sorted([a[0] for a in alert_tuples])) or None
+        active_alert_ids = sorted([a[0] for a in alert_tuples])
         max_severity = max(alert_tuples, key=lambda a: a[1], default=["", None])[1]
 
         conn.execute(
@@ -142,7 +142,7 @@ class PredictionStream:
                 predicted_time,
                 schedule_relationship,
                 recorded_at,
-                active_alert_ids,
+                json.dumps(active_alert_ids) if active_alert_ids else None,
                 max_severity,
             ),
         )
