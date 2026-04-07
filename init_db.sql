@@ -30,23 +30,26 @@ CREATE TABLE IF NOT EXISTS trips (
 CREATE TABLE IF NOT EXISTS prediction_snapshots (
     id                      INTEGER PRIMARY KEY AUTOINCREMENT,
     prediction_id           TEXT    NOT NULL,
-    trip_id                 TEXT    NOT NULL,
-    route_id                TEXT    NOT NULL,
-    direction_id            INTEGER NOT NULL,                -- 0 or 1 per MBTA convention
     stop_id                 TEXT    NOT NULL,
     stop_sequence           INTEGER NOT NULL,
     predicted_time          TEXT    NOT NULL,       -- ISO 8601 timestamp
     schedule_relationship   TEXT,                   -- null (SCHEDULED), ADDED, CANCELLED, SKIPPED, NO_DATA
     recorded_at             TEXT    NOT NULL,        -- ISO 8601 with milliseconds, e.g. 2026-03-29T14:32:01.123
-    active_alert_ids        TEXT,                   -- JSON array of alert IDs active at recorded_at, e.g. '["12345","67890"]'
+    active_alert_count      INTEGER,                 -- Number of active alerts at this time
     max_alert_severity      INTEGER                 -- highest severity (0-10) among active alerts, null if none
 );
 
 CREATE INDEX IF NOT EXISTS idx_snapshots_prediction_recorded
     ON prediction_snapshots (prediction_id, recorded_at);
-
-CREATE INDEX IF NOT EXISTS idx_snapshots_route_stop
-    ON prediction_snapshots (route_id, stop_id);
+    
+-- ─────────────────────────────────────────────
+-- prediction_trips
+-- One row per prediction, mapping it to its trip.
+-- ─────────────────────────────────────────────
+CREATE TABLE IF NOT EXISTS prediction_trips (
+    prediction_id   TEXT    PRIMARY KEY,
+    trip_id         TEXT    NOT NULL
+);
 
 -- ─────────────────────────────────────────────
 -- arrivals
@@ -58,15 +61,10 @@ CREATE INDEX IF NOT EXISTS idx_snapshots_route_stop
 CREATE TABLE IF NOT EXISTS arrivals (
     prediction_id    TEXT    PRIMARY KEY,
     trip_id          TEXT    NOT NULL,
-    route_id         TEXT    NOT NULL,
-    direction_id     INTEGER NOT NULL,
     stop_id          TEXT    NOT NULL,
     resolved_at      TEXT    NOT NULL,              -- when the remove event was received
     resolution_type  TEXT    NOT NULL               -- 'arrived', 'cancelled', 'skipped', 'other'
 );
 
-CREATE INDEX IF NOT EXISTS idx_arrivals_route_stop
-    ON arrivals (route_id, stop_id);
-
-CREATE INDEX IF NOT EXISTS idx_arrivals_resolved_at
-    ON arrivals (resolved_at);
+-- CREATE INDEX IF NOT EXISTS idx_arrivals_resolved_at
+--    ON arrivals (resolved_at);

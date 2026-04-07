@@ -17,11 +17,14 @@ Orange, Red, Blue, Green-B, Green-C, Green-D, Green-E
 
 ## Database Schema
 
-| Table                  | Purpose                                                      |
-| ---------------------- | ------------------------------------------------------------ |
-| `trips`                | Cached trip metadata (route, headsign, direction)            |
-| `prediction_snapshots` | Append-only log of every prediction event with alert context |
-| `arrivals`             | Resolved predictions with arrival/cancellation timestamps    |
+| Table                  | Purpose                                                                        |
+| ---------------------- | ------------------------------------------------------------------------------ |
+| `trips`                | Cached trip metadata (route, headsign, direction), populated lazily            |
+| `prediction_trips`     | Maps each prediction ID to its trip ID (one row per prediction)                |
+| `prediction_snapshots` | Append-only log of every prediction event with alert count and max severity    |
+| `arrivals`             | Resolved predictions with trip, stop, timestamp, and resolution type           |
+
+`prediction_snapshots` is the high-volume table (~300K rows/hour during rush hour) and is kept narrow by design — route and direction are not stored per-snapshot and are instead resolved at analysis time via `prediction_trips → trips`.
 
 See [init_db.sql](init_db.sql) for the full schema and indexes.
 

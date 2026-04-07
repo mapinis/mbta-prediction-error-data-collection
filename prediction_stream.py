@@ -8,7 +8,6 @@ open is meant to be run in its own thread
 
 from concurrent.futures import ThreadPoolExecutor  # pylint: disable=no-name-in-module
 from datetime import datetime, timezone
-import json
 import logging
 from pathlib import Path
 import sqlite3
@@ -49,7 +48,7 @@ def update_trips(db_path: Path, trip_id: str):
 
             # insert or ignore to prevent race condition of two concurrent update_trip threads with same trip_id
             conn.execute(
-                "INSERT OR IGNORE INTO trips VALUES(?, ?, ?, ?, ?)",
+                "INSERT OR IGNORE INTO trips VALUES (?, ?, ?, ?, ?)",
                 (
                     trip_id,
                     trip_data["data"]["relationships"]["route"]["data"]["id"],
@@ -71,16 +70,44 @@ class PredictionStream:
         if not self._db_path.is_file():
             raise ValueError(f"DB path {db_path} not a file that exists")
 
+    def _handle_prediction_add(
+        self, conn: sqlite3.Connection, prediction_add: dict, prediction_time: datetime
+    ):
+        """
+        Handle a single prediction add
+        prediction_add dict is resource shape
+
+        Checks for new trip
+        Adds row to prediction_trips then just calls the update code
+        """
+
+        prediction_id = prediction_add["id"]
+        trip_id = prediction_add["relationships"]["trip"]["data"]["id"]
+
+        logger.info("New prediction %s for trip %s", prediction_id, trip_id)
+
+        # update trips as needed (if new trip)
+        update_trips_executor.submit(update_trips, self._db_path, trip_id)
+
+        # update prediction_trips mapping table
+        conn.execute(
+            "INSERT OR IGNORE INTO prediction_trips VALUES (?, ?)",
+            (prediction_id, trip_id),
+        )
+
+        self._handle_prediction_update(conn, prediction_add, prediction_time)
+
     def _handle_prediction_update(
-        self, conn: sqlite3.Connection, prediction_update: dict
+        self,
+        conn: sqlite3.Connection,
+        prediction_update: dict,
+        prediction_time: datetime,
     ):
         """
         Handles a single prediction update
         """
 
         # get all the values needed from the update dictionary
-        prediction_time = datetime.now(timezone.utc)
-
         recorded_at = prediction_time.isoformat()
         prediction_id = prediction_update["id"]
 
@@ -89,7 +116,7 @@ class PredictionStream:
         direction_id = prediction_update["attributes"]["direction_id"]
         route_id = prediction_update["relationships"]["route"]["data"]["id"]
 
-        logger.info("New prediction for trip %s", trip_id)
+        logger.info("Updated prediction %s for trip %s", prediction_id, trip_id)
 
         # if the prediction is for the start of a route, arrival_time may be null
         # in this case, fall back to departure_time (which will only be null at last stop)
@@ -115,51 +142,48 @@ class PredictionStream:
 
         stop_sequence = prediction_update["attributes"]["stop_sequence"]
 
-        # update trips as needed
-        update_trips_executor.submit(update_trips, self._db_path, trip_id)
-
         # get active alerts for this prediction
         alert_tuples = check_alerts(
             AlertEntity(*(route_id, direction_id, stop_id, trip_id)), prediction_time
         )
 
-        active_alert_ids = sorted([a[0] for a in alert_tuples])
-        max_severity = max(alert_tuples, key=lambda a: a[1], default=["", None])[1]
+        alert_count = len(alert_tuples)
+        max_severity = max(a[1] for a in alert_tuples) if alert_count > 0 else None
 
         conn.execute(
             """INSERT INTO prediction_snapshots
-            (prediction_id, trip_id, route_id, direction_id, stop_id,
+            (prediction_id, stop_id,
             stop_sequence, predicted_time, schedule_relationship,
-            recorded_at, active_alert_ids, max_alert_severity)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+            recorded_at, active_alert_count, max_alert_severity)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
             (
                 prediction_id,
-                trip_id,
-                route_id,
-                direction_id,
                 stop_id,
                 stop_sequence,
                 predicted_time,
                 schedule_relationship,
                 recorded_at,
-                json.dumps(active_alert_ids) if active_alert_ids else None,
+                alert_count,
                 max_severity,
             ),
         )
 
-    def _handle_arrival(self, conn: sqlite3.Connection, prediction_removal: dict):
+    def _handle_arrival(
+        self, conn: sqlite3.Connection, prediction_removal: dict, arrival_time: datetime
+    ):
         """
         Handle arrival of train to stop via prediction removal
         """
 
-        resolved_at = datetime.now(timezone.utc).isoformat()
+        resolved_at = arrival_time.isoformat()
         prediction_id = prediction_removal["id"]
 
         res = conn.execute(
-            """SELECT trip_id, route_id, direction_id, stop_id, schedule_relationship
-            FROM prediction_snapshots
-            WHERE prediction_id = ?
-            ORDER BY recorded_at DESC
+            """SELECT pt.trip_id, ps.stop_id, ps.schedule_relationship
+            FROM prediction_snapshots ps
+            JOIN prediction_trips pt ON pt.prediction_id = ps.prediction_id
+            WHERE ps.prediction_id = ?
+            ORDER BY ps.recorded_at DESC
             LIMIT 1""",
             (prediction_id,),
         )
@@ -174,7 +198,7 @@ class PredictionStream:
             return
 
         # match schedule_resolution to resolution_type
-        match data[4]:
+        match data[2]:
             case "SCHEDULED":
                 resolution_type = "arrived"
             case "ADDED":
@@ -191,13 +215,11 @@ class PredictionStream:
         )
 
         conn.execute(
-            "INSERT OR IGNORE INTO arrivals VALUES (?, ?, ?, ?, ?, ?, ?)",
+            "INSERT OR IGNORE INTO arrivals VALUES (?, ?, ?, ?, ?)",
             (
                 prediction_id,
                 data[0],
                 data[1],
-                data[2],
-                data[3],
                 resolved_at,
                 resolution_type,
             ),
@@ -229,19 +251,27 @@ class PredictionStream:
 
                     for sse in event_source.iter_sse():
 
+                        event_time = datetime.now(timezone.utc)
+                        json_data = sse.json()
+
                         match sse.event:
                             case "reset":
                                 # data should be list of resources
-                                pred_updates = sse.json()
-                                for pred_update in pred_updates:
-                                    self._handle_prediction_update(conn, pred_update)
-                            case "add" | "update":
+                                for pred_update in json_data:
+                                    self._handle_prediction_add(
+                                        conn, pred_update, event_time
+                                    )
+                            case "add":
                                 # data is singular resource
-                                pred_update = sse.json()
-                                self._handle_prediction_update(conn, pred_update)
+                                self._handle_prediction_add(conn, json_data, event_time)
+                            case "update":
+                                # data is singular resource
+                                self._handle_prediction_update(
+                                    conn, json_data, event_time
+                                )
                             case "remove":
                                 # data is id
-                                self._handle_arrival(conn, sse.json())
+                                self._handle_arrival(conn, json_data, event_time)
                             case _:
                                 logger.warning(
                                     "Received event with unexpected type (%s), data: %s",
