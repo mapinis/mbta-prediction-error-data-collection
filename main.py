@@ -51,13 +51,21 @@ def setup_db(db_path: Path):
     "db_path",
     type=click.Path(path_type=Path, allow_dash=False),
 )
-def main(db_path: Path):
+@click.option(
+    "--log-level",
+    default="INFO",
+    show_default=True,
+    type=click.Choice(["DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"], case_sensitive=False),
+    help="Minimum log level to emit.",
+)
+def main(db_path: Path, log_level: str):
     """
     Run the data collection
 
     DB_PATH is path to new or current SQLite DB. Will be created and setup if needed.
     """
 
+    logging.getLogger().setLevel(log_level.upper())
     logger.info("Starting up MBTA error data collection")
     logger.info("DB init script path: %s", DB_INIT_SCRIPT_PATH)
     logger.info("DB path: %s", db_path)
