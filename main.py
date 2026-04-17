@@ -3,6 +3,7 @@ MBTA Error Data Collection
 """
 
 import sqlite3
+from contextlib import closing
 from pathlib import Path
 import logging
 import os
@@ -18,7 +19,8 @@ from prediction_stream import PredictionStream
 load_dotenv()
 
 logging.basicConfig(
-    level=logging.INFO, format="%(filename)s:%(funcName)s — %(levelname)s — %(message)s"
+    level=logging.WARNING,
+    format="%(filename)s:%(funcName)s — %(levelname)s — %(message)s",
 )
 logging.getLogger("httpx").setLevel(logging.ERROR)
 logger = logging.getLogger(__name__)
@@ -40,8 +42,9 @@ def setup_db(db_path: Path):
     # creates the db if it does not exist
     db_path.touch()
 
-    with sqlite3.connect(db_path) as conn:
-        conn.executescript(init_script)
+    with closing(sqlite3.connect(db_path)) as conn:
+        with conn:
+            conn.executescript(init_script)
 
     logger.info("DB successfully setup")
 
@@ -53,7 +56,7 @@ def setup_db(db_path: Path):
 )
 @click.option(
     "--log-level",
-    default="INFO",
+    default="WARNING",
     show_default=True,
     type=click.Choice(["DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"], case_sensitive=False),
     help="Minimum log level to emit.",

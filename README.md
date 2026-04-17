@@ -60,6 +60,12 @@ python main.py ./data/results.db
 
 The service runs indefinitely, collecting data from both streams. Press `Ctrl+C` to stop.
 
+By default only warnings and above are logged. Use `--log-level INFO` (or `DEBUG`) for more verbose output during development or troubleshooting:
+
+```bash
+python main.py --log-level INFO ./data/results.db
+```
+
 ## Project Structure
 
 ```

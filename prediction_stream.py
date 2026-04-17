@@ -7,6 +7,7 @@ open is meant to be run in its own thread
 """
 
 from concurrent.futures import ThreadPoolExecutor  # pylint: disable=no-name-in-module
+from contextlib import closing
 from datetime import datetime, timezone
 import logging
 from pathlib import Path
@@ -31,32 +32,40 @@ def update_trips(db_path: Path, trip_id: str):
     Should lazily run in its own thread
     """
 
-    with sqlite3.connect(db_path) as conn:
-        cursor = conn.execute("SELECT trip_id FROM trips WHERE trip_id=?", (trip_id,))
-
-        if cursor.fetchone() is None:
-            # missing, get trip data
-            logger.info("New trip id: %s", trip_id)
-
-            trip_response = httpx.get(
-                f"https://api-v3.mbta.com/trips/{trip_id}",
-                headers={"x-api-key": os.environ["MBTA_API_KEY"]},
-                timeout=5,  # 5 seconds
+    # NB: `with sqlite3.connect(...) as conn` only handles the transaction — it
+    # does NOT close the connection. In a long-lived threadpool that leaks an fd
+    # per call and pins WAL snapshots, so we wrap in contextlib.closing() to
+    # guarantee the connection itself is released. The inner `with conn:`
+    # preserves the commit/rollback semantics.
+    with closing(sqlite3.connect(db_path)) as conn:
+        with conn:
+            cursor = conn.execute(
+                "SELECT trip_id FROM trips WHERE trip_id=?", (trip_id,)
             )
 
-            trip_data = trip_response.raise_for_status().json()
+            if cursor.fetchone() is None:
+                # missing, get trip data
+                logger.info("New trip id: %s", trip_id)
 
-            # insert or ignore to prevent race condition of two concurrent update_trip threads with same trip_id
-            conn.execute(
-                "INSERT OR IGNORE INTO trips VALUES (?, ?, ?, ?, ?)",
-                (
-                    trip_id,
-                    trip_data["data"]["relationships"]["route"]["data"]["id"],
-                    trip_data["data"]["attributes"]["headsign"],
-                    trip_data["data"]["attributes"]["direction_id"],
-                    datetime.now(timezone.utc).isoformat(),
-                ),
-            )
+                trip_response = httpx.get(
+                    f"https://api-v3.mbta.com/trips/{trip_id}",
+                    headers={"x-api-key": os.environ["MBTA_API_KEY"]},
+                    timeout=5,  # 5 seconds
+                )
+
+                trip_data = trip_response.raise_for_status().json()
+
+                # insert or ignore to prevent race condition of two concurrent update_trip threads with same trip_id
+                conn.execute(
+                    "INSERT OR IGNORE INTO trips VALUES (?, ?, ?, ?, ?)",
+                    (
+                        trip_id,
+                        trip_data["data"]["relationships"]["route"]["data"]["id"],
+                        trip_data["data"]["attributes"]["headsign"],
+                        trip_data["data"]["attributes"]["direction_id"],
+                        datetime.now(timezone.utc).isoformat(),
+                    ),
+                )
 
 
 class PredictionStream:
@@ -232,8 +241,10 @@ class PredictionStream:
         Handles reset/add/update/remove events
         """
 
-        # create DB connection
-        with sqlite3.connect(self._db_path) as conn:
+        # create DB connection — closing() guarantees the fd is released on
+        # stream shutdown. Transaction management is handled by explicit
+        # conn.commit() calls in the event loop below, so no `with conn:` needed.
+        with closing(sqlite3.connect(self._db_path)) as conn:
             # create httpx client
             with httpx.Client(timeout=httpx.Timeout(5.0, read=None)) as client:
                 # connect

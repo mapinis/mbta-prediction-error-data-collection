@@ -54,15 +54,23 @@ def add_alert(
 def remove_alert(alert_id: str):
     """
     Thread-safe alert remove
+
+    Tolerant of entities that are not present in _entity_to_alerts_map:
+    an alert's informed_entity list may contain duplicates, in which case
+    the second pass would see an entity already popped by the first. Also
+    defends against any hypothetical drift between the two maps.
     """
 
     with _alerts_lock:
         if alert_id in _alerts_to_entities_map:
             entities, *_ = _alerts_to_entities_map.pop(alert_id)
             for entity in entities:
-                _entity_to_alerts_map[entity].discard(alert_id)
-                if not _entity_to_alerts_map[entity]:
-                    _entity_to_alerts_map.pop(entity)
+                alert_ids = _entity_to_alerts_map.get(entity)
+                if alert_ids is None:
+                    continue
+                alert_ids.discard(alert_id)
+                if not alert_ids:
+                    _entity_to_alerts_map.pop(entity, None)
 
 
 def check_alerts(entities: AlertEntity, time: datetime) -> Set[tuple[str, int]]:
